@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import random
 import pandas as pd
 from selenium import webdriver
@@ -14,7 +15,7 @@ from selenium.common.exceptions import TimeoutException
 # ✅ 参数配置
 departure_code = "GVA"
 contients = ["Africa", "Asia", "Europe", "North America", "South America", "Oceania"]
-selected_continents = [contients[3], contients[4], contients[5]]
+selected_continents = [contients[0], contients[1], contients[2], contients[4], contients[5]]
 file_path = 'Fly_Across_6_Continents.xlsx'
 departure_date_label = "Wed Aug 06 2025"
 
@@ -42,7 +43,10 @@ os.makedirs("screenshots", exist_ok=True)
 # ✅ 初始化CSV文件
 csv_file = "turkish_prices_results.csv"
 if not os.path.exists(csv_file):
-    pd.DataFrame(columns=["departure", "arrival", "date", "prices", "lowest_price"]).to_csv(csv_file, index=False)
+    pd.DataFrame(columns=[
+        "departure", "arrival", "arrival_country", "arrival_continent",
+        "date", "prices", "lowest_price_today", "week_prices", "lowest_price_week"
+    ]).to_csv(csv_file, index=False)
 
 # ✅ 模拟用户行为
 def simulate_user_behavior(driver):
@@ -66,19 +70,47 @@ def init_driver():
 
 # ✅ 设置机场代码
 def set_airport_code(driver, wait, input_id: str, airport_code: str):
+    # 点击输入框并清空
     input_box = wait.until(EC.element_to_be_clickable((By.ID, input_id)))
     input_box.click()
     time.sleep(0.2)
     input_box.send_keys(Keys.CONTROL + "a")
     input_box.send_keys(Keys.DELETE)
     time.sleep(0.1)
+
+    # 输入代码
     input_box = wait.until(EC.element_to_be_clickable((By.ID, input_id)))
     input_box.click()
     time.sleep(0.2)
     input_box.send_keys(airport_code)
-    time.sleep(1.5)
-    suggestion = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'ul[role="listbox"] > li[role="button"]')))
-    driver.execute_script("arguments[0].click();", suggestion)
+    time.sleep(1.5)  # 等待下拉框出现
+
+    # 获取下拉选项
+    suggestions = wait.until(EC.presence_of_all_elements_located(
+        (By.CSS_SELECTOR, 'ul[role="listbox"] > li[role="button"]')
+    ))
+
+    # 遍历查找匹配项
+    found = False
+    for suggestion in suggestions:
+        try:
+            code_span = suggestion.find_element(By.CSS_SELECTOR, 'span.hm__style_booker-input-list-item-text-code__bHpVL')
+            code_text = code_span.text.strip('(), ')
+            if code_text.upper() == airport_code.upper():
+                driver.execute_script("arguments[0].scrollIntoView(true);", suggestion)
+                driver.execute_script("arguments[0].click();", suggestion)
+                print(f"✅ 选择了目标机场: {code_text}")
+                found = True
+                break
+        except Exception as e:
+            print(f"⚠️ 检查候选项时出错: {e}")
+            continue
+
+    # 如果没有找到匹配的，就选择第一个
+    if not found:
+        print("⚠️ 未找到完全匹配的机场代码，选择默认第一个。")
+        driver.execute_script("arguments[0].click();", suggestions[0])
+
 
 # ✅ 选择日期
 def select_departure_date(driver, wait, label_str):
@@ -94,9 +126,9 @@ def select_departure_date(driver, wait, label_str):
             return
     raise Exception(f"❌ 未找到日期: {label_str}")
 
-# ✅ 等待并提取价格
 def wait_and_capture_prices(driver, wait, screenshot_name):
     try:
+        # If modal showing no flights appears, skip
         try:
             WebDriverWait(driver, 6).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, 'div[id*="ForceRedirectBaseModal"]'))
@@ -106,6 +138,7 @@ def wait_and_capture_prices(driver, wait, screenshot_name):
         except TimeoutException:
             pass
 
+        # Wait for flight list to load
         WebDriverWait(driver, 30).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, 'div[class*="av__FlightPanel_flightList__gxfmQ"]'))
         )
@@ -114,33 +147,117 @@ def wait_and_capture_prices(driver, wait, screenshot_name):
         )
         time.sleep(1.2)
 
-        economy_prices = []
+        # Click the filter button
+        try:
+            buttons = driver.find_elements(By.CSS_SELECTOR, 'div#directAndConnectingFilterDropdown')
+            button = next(
+                (btn for btn in buttons if "airline" in btn.text.strip().lower()), 
+                None
+            )
+            driver.execute_script("arguments[0].scrollIntoView(true);", button)
+            button.click()
+            time.sleep(0.5)
+            print("🖱️ 已点击展开按钮。")
+        except Exception as e:
+            print(f"⚠️ 点击展开按钮失败: {e}")
+
+        # Uncheck specific airlines
+        try:
+            targets = driver.find_elements(By.CSS_SELECTOR, "div.av__style_group__kbhRb.av__style_checkbox__XMtFs")
+
+            for target in targets:
+                label_elem = target.find_element(By.CSS_SELECTOR, 'label')
+                label_text = label_elem.text.strip()
+
+                if label_text == '':
+                    continue
+
+                if "turkish airlines" not in label_text.lower():
+                    # 找到这个 div 里的按钮并点击 uncheck
+                    checkbox_button = target.find_element(By.CSS_SELECTOR, 'button')
+                    driver.execute_script("arguments[0].scrollIntoView(true);", checkbox_button)
+                    checkbox_button.click()
+                    time.sleep(0.3)
+
+            print("✅ 已取消两个筛选条件。")
+        except Exception as e:
+            print(f"⚠️ 取消筛选条件时出错: {e}")
+
+        # Check if there are any flights left
+        time.sleep(1)
         price_blocks = driver.find_elements(By.CSS_SELECTOR, 'div[class*="av__FlightItem_flightItem__BGnIP"]')
+        if not price_blocks:
+            print("🚫 过滤后无航班结果，跳过记录。")
+            return []
+
+        # Extract economy prices
+        economy_prices = []
         for block in price_blocks:
             try:
                 price_info = block.find_element(By.CSS_SELECTOR, 'span[class*="av__style_price-type-content__3xWFY"]').text.strip()
                 price_lines = price_info.split("\n")
-                price_val = price_lines[0].strip()
-                currency = "".join(price_lines[1:]).strip()
+                currency = price_lines[0].strip()
+                price = "".join(price_lines[1:]).strip().replace(" ", "").replace(",", "")
                 economy_prices.append({
-                    "price": price_val,
+                    "price": price,
                     "currency": currency
                 })
             except:
                 continue
 
+
         driver.execute_script("window.scrollTo(0, 0);")
         time.sleep(0.5)
+
+        # 全屏 + 缩放
+        driver.execute_script("""
+            document.body.style.zoom = "75%";
+        """)
+        time.sleep(0.3)  # 等待渲染
+
         driver.save_screenshot(screenshot_name)
         print(f"📸 已截图：{screenshot_name}")
-        return economy_prices
+
+        # 🆕 If we have at least one economy price, fetch weekly calendar prices too
+        if economy_prices:
+            try:
+                print("🔎 开始提取一周价格信息…")
+                week_prices = []
+                week_items = driver.find_elements(By.CSS_SELECTOR, 'li.av__style_clickable__WDRZn.av__style_chart-item__ZV7sq')
+                for item in week_items:
+                    try:
+                        day = item.find_element(By.CSS_SELECTOR, 'span.av__style_number__Ld_TQ').text.strip()
+                        month = item.find_element(By.CSS_SELECTOR, 'span.av__style_month__q39Dw').text.strip()
+                        weekday = item.find_element(By.CSS_SELECTOR, 'span.av__style_dayname__Tm8AA').text.strip()
+                        price_text = item.find_element(By.CSS_SELECTOR, 'span.av__style_pricePart__lYxno').text.strip().replace(",", "").replace(" ", "")
+                        currency = item.find_element(By.CSS_SELECTOR, 'span.av__style_currency__9Z11P').text.strip().replace(",", "").replace(" ", "")
+                        week_prices.append({
+                            "date": f"{day} {month} ({weekday})",
+                            "price": price_text,
+                            "currency": currency
+                        })
+                    except Exception as e:
+                        print(f"⚠️ 提取某一天价格失败: {e}")
+                        continue
+
+                print("✅ 一周价格提取完成：")
+                for wp in week_prices:
+                    print(wp)
+                
+                return economy_prices, week_prices
+
+            except Exception as e:
+                print(f"⚠️ 提取一周价格时出错: {e}")
+                return economy_prices, []
+
+        return economy_prices, []
 
     except TimeoutException:
         print("⏱️ 超时：30秒内未加载出有效航班内容，已跳过该项。")
-        return []
+        return [], []
     except Exception as e:
         print(f"❌ 异常发生：{e}")
-        return []
+        return [], []
 
 # ✅ 追加写入 CSV
 def append_to_csv(row):
@@ -175,25 +292,56 @@ for arrival_code in target_airports:
         driver.execute_script("arguments[0].click();", search_btn)
 
         screenshot_name = os.path.join("screenshots", f"result_{departure_code}_{arrival_code}_{departure_date_label.replace(' ', '')}.png")
-        prices = wait_and_capture_prices(driver, wait, screenshot_name)
+        prices_economy, prices_week = wait_and_capture_prices(driver, wait, screenshot_name)
 
-        # ✅ 分析并保存价格
-        price_values = []
-        for p in prices:
+        # ✅ 分析当天经济舱价格
+        today_price_values = []
+        for p in prices_economy:
             try:
                 val = float(p["price"].replace(",", "").replace(" ", ""))
-                price_values.append(val)
+                today_price_values.append(val)
             except:
                 continue
-        lowest = min(price_values) if price_values else None
+        lowest_today = min(today_price_values) if today_price_values else None
 
+        # ✅ 分析一周价格
+        week_price_values = []
+        for p in prices_week:
+            try:
+                val = float(p["price"].replace(",", "").replace(" ", ""))
+                week_price_values.append(val)
+            except:
+                continue
+        lowest_week = min(week_price_values) if week_price_values else None
+
+        # ✅ 查找 arrival_country 和 arrival_continent
+        arrival_info = df_airports[df_airports['airport_code'] == arrival_code]
+        if not arrival_info.empty:
+            arrival_country = arrival_info.iloc[0]['country']
+        else:
+            arrival_country = "Unknown"
+
+        arrival_continent = None
+        for cont in df_countries.columns:
+            if arrival_country in df_countries[cont].dropna().tolist():
+                arrival_continent = cont
+                break
+        if arrival_continent is None:
+            arrival_continent = "Unknown"
+
+        # ✅ 构建记录
         row = {
             "departure": departure_code,
             "arrival": arrival_code,
+            "arrival_country": arrival_country,
+            "arrival_continent": arrival_continent,
             "date": departure_date_label,
-            "prices": str(prices),
-            "lowest_price": lowest
+            "prices": json.dumps(prices_economy, ensure_ascii=False),
+            "lowest_price_today": lowest_today,
+            "week_prices": json.dumps(prices_week, ensure_ascii=False),
+            "lowest_price_week": lowest_week
         }
+
         append_to_csv(row)
 
     except Exception as e:
