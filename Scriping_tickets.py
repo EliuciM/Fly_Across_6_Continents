@@ -15,7 +15,7 @@ from selenium.common.exceptions import TimeoutException
 # ✅ 参数配置
 departure_code = "GVA"
 contients = ["Africa", "Asia", "Europe", "North America", "South America", "Oceania"]
-selected_continents = [contients[0], contients[1], contients[2], contients[4], contients[5]]
+selected_continents = [contients[3]]
 file_path = 'Fly_Across_6_Continents.xlsx'
 departure_date_label = "Wed Aug 06 2025"
 
