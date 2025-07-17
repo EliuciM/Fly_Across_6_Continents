@@ -13,11 +13,11 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import TimeoutException
 
 # ✅ 参数配置
-departure_code = "GVA"
+departure_code = "IST"
 contients = ["Africa", "Asia", "Europe", "North America", "South America", "Oceania"]
-selected_continents = [contients[3]]
+selected_continents = [contients[0], contients[1], contients[2], contients[3], contients[5]]  # 选择所有大洲
 file_path = 'Fly_Across_6_Continents.xlsx'
-departure_date_label = "Wed Aug 06 2025"
+departure_date_label = "Thu Sep 04 2025"
 
 # ✅ 读取数据
 df_countries = pd.read_excel(file_path, sheet_name='turkish_countries')
@@ -41,7 +41,7 @@ user_agents = [
 os.makedirs("screenshots", exist_ok=True)
 
 # ✅ 初始化CSV文件
-csv_file = "turkish_prices_results.csv"
+csv_file = f"turkish_prices_results_from_{departure_code}.csv"
 if not os.path.exists(csv_file):
     pd.DataFrame(columns=[
         "departure", "arrival", "arrival_country", "arrival_continent",
@@ -111,20 +111,55 @@ def set_airport_code(driver, wait, input_id: str, airport_code: str):
         print("⚠️ 未找到完全匹配的机场代码，选择默认第一个。")
         driver.execute_script("arguments[0].click();", suggestions[0])
 
-
-# ✅ 选择日期
-def select_departure_date(driver, wait, label_str):
+# ✅ 选择日期（支持跨月份导航）
+def select_departure_date(driver, wait, label_str, max_months=6):
     date_area = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "div.hm__RoundAndOneWayTab_datePassengerArea__jToT9")))
     driver.execute_script("arguments[0].click();", date_area)
     time.sleep(1.5)
-    spans = wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'button span[aria-label]')))
-    for span in spans:
-        if span.get_attribute("aria-label").strip() == label_str:
-            button = span.find_element(By.XPATH, "./ancestor::button")
-            driver.execute_script("arguments[0].click();", button)
-            print(f"✅ 日期选择成功: {label_str}")
-            return
-    raise Exception(f"❌ 未找到日期: {label_str}")
+    
+    # 循环查找日期，支持跨月份
+    for month_count in range(max_months):
+        spans = wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'button span[aria-label]')))
+        
+        # 在当前页面查找目标日期
+        for span in spans:
+            if span.get_attribute("aria-label").strip() == label_str:
+                button = span.find_element(By.XPATH, "./ancestor::button")
+                driver.execute_script("arguments[0].click();", button)
+                print(f"✅ 日期选择成功: {label_str}")
+                return
+        
+        # 如果当前页面没找到，且不是最后一次尝试，则点击下个月
+        if month_count < max_months - 1:
+            try:
+                # 查找下个月按钮，尝试多种选择器
+                next_button = None
+                selectors = [
+                    "button.react-calendar__navigation__next-button",
+                    "button[aria-label*='next']",
+                    "button[aria-label*='Go to the next month']"
+                ]
+                
+                for selector in selectors:
+                    try:
+                        next_button = driver.find_element(By.CSS_SELECTOR, selector)
+                        break
+                    except:
+                        continue
+                
+                if next_button and next_button.is_enabled():
+                    driver.execute_script("arguments[0].click();", next_button)
+                    print(f"📅 切换到下个月 ({month_count + 2}/{max_months})")
+                    time.sleep(1.5)
+                else:
+                    print("❌ 未找到可用的下个月按钮")
+                    break
+                    
+            except Exception as e:
+                print(f"❌ 切换月份时出错: {e}")
+                break
+    
+    raise Exception(f"❌ 在 {max_months} 个月内未找到日期: {label_str}")
 
 def wait_and_capture_prices(driver, wait, screenshot_name):
     try:
